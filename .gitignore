@@ -1,0 +1,17 @@
+DEPRECATED/
+result/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pkl
+*.log
+.venv/
+env/
+venv/
+plot_*.py
+utils/
+script/
+.ipynb_checkpoints/
+.DS_Store
+Thumbs.db
