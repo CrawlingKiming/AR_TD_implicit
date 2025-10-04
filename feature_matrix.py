@@ -3,6 +3,7 @@
 
 """
 Generate an n-by-d feature matrix.
+Used for MRP experiments 
 """
 
 import numpy as np

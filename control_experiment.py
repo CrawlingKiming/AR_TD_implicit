@@ -17,48 +17,7 @@ import os
 import pickle
 from environment import AccessControlEnv
 
-# Wrapper 
-class CustomInfiniteAcrobotWrapper(gym.Wrapper):
-    """
-    A wrapper for the Acrobot-v1 environment that:
-      1. Modifies the reward to be based on the tip height.
-      2. Forces an infinite-horizon formulation (i.e. no terminal state).
-    
-    The tip height is computed as:
-         tip_height = -cos(theta1) - cos(theta1 + theta2)
-    where theta1 and theta2 are recovered from the first four entries of the
-    observation (assumed to be [cos(theta1), sin(theta1), cos(theta2), sin(theta2), ...]).
-    """
-    
-    def __init__(self, env):
-        super().__init__(env)
-    
-    def step(self, action):
-        # Take a step in the base environment.
-        observation, reward, terminated, truncated, info = self.env.step(action)
-        
-        # Retrieve the first four components: [cos(theta1), sin(theta1), cos(theta2), sin(theta2)]
-        cos_t1, sin_t1, cos_t2, sin_t2 = observation[:4]
-        # Recover the angles.
-        theta1 = np.arctan2(sin_t1, cos_t1)
-        theta2 = np.arctan2(sin_t2, cos_t2)
-        # Compute the tip height.
-        tip_height = -np.cos(theta1) - np.cos(theta1 + theta2)
-        # Use tip_height as the new reward. Optionally, you can rescale or shift this value.
-        new_reward = tip_height
-        truncated = False
-        if tip_height > 1.0:
-            print("succeed")
-            new_reward = 1.0#100.0
-            truncated = True
-        else : 
-            new_reward = (new_reward + 2.01) / 10
-        # Force the episode not to end by setting terminated and truncated to False.
-        return observation, new_reward, True, info
-    def reset(self, **kwargs):
-        obs, info = self.env.reset(**kwargs)
-        return obs
-
+# Wrapper used for Pendulum
 class CustomInfinitePendulumWrapper(gym.Wrapper):
     """
     A wrapper for the pendulum
@@ -72,7 +31,7 @@ class CustomInfinitePendulumWrapper(gym.Wrapper):
         observation, reward, terminated, truncated, info = self.env.step(action)
 
         new_reward = reward
-        new_reward = new_reward / 16.27#(new_reward + 16.27) / 16.27
+        new_reward = new_reward / 16.27 # scales the reward value 
         # Force the episode not to end by setting terminated and truncated to False.
         return observation, new_reward, False, info
     def reset(self, **kwargs):
@@ -93,7 +52,6 @@ class Estimator():
         else: 
             self.nA = num_actions 
         example_state = env.reset()
-        #print(example_state)
         self.num_features = len(self.featurize_state(example_state))
         # Initialize one weight vector per action.
         self.weights = [np.random.uniform(-0.5, 0.5, size=self.num_features)for _ in range(self.nA)] #np.zeros(self.num_features) 
@@ -130,47 +88,46 @@ def make_epsilon_greedy_policy(estimator, epsilon, nA):
         A = np.ones(nA, dtype=float) * epsilon / nA
         q_values = estimator.predict(observation)
         best_action_idx = np.argmax(q_values)
-        A[best_action_idx] += (1.0 - epsilon)
+        A[best_action_idx] += (1.0 - epsilon) # if epsilon is 0.0, becomes greedy policy
         return A
     return policy_fn
 
 # ---------------------------
-# RMSBE Computation
+# Sanity Check 
 # ---------------------------
 def compute_rmsbe(estimator, env, discount_factor=1.0, n_samples=100):
     """
-    Computes the True estimation error of the Q function and reward estimation 
+    Computes the accumulated differential Q value and the current Q value difference, used for sanity checks 
     """
     errors = []
     errors_reward = []
     length = 50
     for j in range(10):
-        s = env_test.reset() 
+        s = env_test.reset() # sample new state  
         for _ in range(10):
             a_idx = np.argmax(estimator.predict(s))
             a = estimator.action_set[a_idx]
             s, _, _, _ = env_test.step(a)
         td_error = 0.0 
-        reward_est = 0.0 
+        reward_est = 0.0 # initialize  
         a_idx = np.argmax(estimator.predict(s))
         a = estimator.action_set[a_idx]
-        q_sa = estimator.predict(s, a_idx)
+        q_sa0 = estimator.predict(s, a_idx)
 
         for _ in range(n_samples):
-            # estimate 
+            
             a_idx = np.argmax(estimator.predict(s))
             a = estimator.action_set[a_idx]
             new_state, reward, terminated, _ = env_test.step(a)
-            reward_est += reward 
-            td_error += reward - estimator.bar_r 
-            q_sa = estimator.predict(s, a_idx)
+            reward_est += reward # collect current reward
+            td_error += reward - estimator.bar_r # collect current differential value 
             a_next_idx = np.argmax(estimator.predict(new_state))
             
             q_next = estimator.predict(new_state, a_next_idx)
             s = new_state 
 
-        bar_r_est_error = reward_est/n_samples - estimator.bar_r
-        q_error = td_error - q_sa 
+        bar_r_est_error = reward_est/n_samples - estimator.bar_r # compute the different
+        q_error = td_error - q_sa0 # compute the difference from current Q(s,a) value and the cumulated differentail values
         errors.append(q_error**2)
         errors_reward.append(bar_r_est_error**2)
     
@@ -182,9 +139,7 @@ def compute_rmsbe(estimator, env, discount_factor=1.0, n_samples=100):
 def sarsa_vanilla(env_dict, estimator, num_episodes, c_alpha=1.0,
                   epsilon=0.1, epsilon_decay=1.0, alpha0=0.1, rmsbe_every=1, n_rmsbe_samples=100, R = 1000, max_step=100):
     """
-    Implements SARSA using the vanilla TD update under AR
-    Also computes RMSBE at the end of each episode.
-    Returns stats and an array of RMSBE values.
+    Implements SARSA using the standard TD update under AR
     """
     
     nA = estimator.nA#env.action_space.n
@@ -192,31 +147,29 @@ def sarsa_vanilla(env_dict, estimator, num_episodes, c_alpha=1.0,
                          episode_rewards=np.zeros(num_episodes))
     rmsbe_list = []
     reward_list = []
-    state = env.reset()
+    state = env.reset() # initialize 
     z = 0.0
 
-    for i_episode in range(num_episodes):
-        #if (i_episode) % 250 == 0:
-        #    state = env.reset()
-        alpha_eff=step_sizes[i_episode]
+    for i_episode in range(num_episodes): # number of iterations 
+
+        alpha_eff=step_sizes[i_episode] # current step size 
         if i_episode < thr:
             current_epsilon = 0.25
         elif i_episode < thr*2:
-            current_epsilon = 0.1
+            current_epsilon = 0.125
         else:
             current_epsilon = 0.00
-        alpha_eff=step_sizes[i_episode]
-        current_epsilon = epsilon * (epsilon_decay ** i_episode)
-        policy = make_epsilon_greedy_policy(estimator, current_epsilon, nA)
+
+        policy = make_epsilon_greedy_policy(estimator, current_epsilon, nA) # returns array of action probabilites (for epsilon-greedy)
         action_idx = np.random.choice(nA, p=policy(state))
         action = estimator.action_set[action_idx]
-        #for t in itertools.count():
+
         new_state, reward, terminated, _ = env.step(action)
-        new_action_idx = np.random.choice(nA, p=policy(new_state))
+        new_action_idx = np.random.choice(nA, p=policy(new_state)) # next action 
         new_action = estimator.action_set[new_action_idx]
 
         stats.episode_rewards[i_episode] += reward
-        stats.episode_bar_r[i_episode] += estimator.bar_r
+        stats.episode_bar_r[i_episode] += estimator.bar_r 
         phi_state = estimator.featurize_state(state)
         q_sa = np.dot(estimator.weights[action_idx], phi_state)
 
@@ -228,9 +181,12 @@ def sarsa_vanilla(env_dict, estimator, num_episodes, c_alpha=1.0,
         else:
             phi_next = estimator.featurize_state(new_state)
             q_next = np.dot(estimator.weights[new_action_idx], phi_next)
+        # comupte \delta_t = R_t - estimator.bar_r + q(s_{t+1}, a_{t+1}) - q(s_{t}, a_{t})
         td_target = reward - estimator.bar_r + q_next
         td_error = td_target - q_sa
+        # update z 
         z = Lambda * z + phi_state
+        # update parameters
         estimator.weights[action_idx] += (alpha_eff * td_error * z) 
         estimator.bar_r = estimator.bar_r + c_alpha * alpha_eff* (reward - estimator.bar_r) 
         state = new_state
@@ -251,9 +207,7 @@ def sarsa_vanilla(env_dict, estimator, num_episodes, c_alpha=1.0,
 def sarsa_implicit(env_dict, estimator, num_episodes, c_alpha=1.0,
                    epsilon=0.1, epsilon_decay=1.0, alpha0=0.5, rmsbe_every=1, n_rmsbe_samples=100, R = 1000, max_step=100):
     """
-    Implements SARSA with an implicit TD update under AR 
-    Also computes RMSBE at the end of each episode.
-    Returns stats and an array of RMSBE values.
+    Implements SARSA using the implicit TD update under AR
     """
     nA = estimator.nA#env.action_space.n
     stats = EpisodeStats(episode_bar_r=np.zeros(num_episodes),
@@ -262,20 +216,20 @@ def sarsa_implicit(env_dict, estimator, num_episodes, c_alpha=1.0,
     reward_list = []
     z = 0.0 
     state = env.reset()
-    thr = 5000 
+    thr = 5000  # epsilon value decreasing for every thr iteration 
     current_epsilon =0.25
     policy = make_epsilon_greedy_policy(estimator, current_epsilon, nA)
     action_idx = np.random.choice(nA, p=policy(state))
     
-    for i_episode in range(num_episodes):
+    for i_episode in range(num_episodes): 
 
-        alpha_eff=step_sizes[i_episode]
+        alpha_eff=step_sizes[i_episode] # current step size 
         if i_episode < thr:
             current_epsilon = 0.25
         elif i_episode < thr*2:
-            current_epsilon = 0.1
+            current_epsilon = 0.125
         else:
-            current_epsilon = 0.00#epsilon * (epsilon_decay ** (i_episode-thr))
+            current_epsilon = 0.00 # reaches zero eventually 
         policy = make_epsilon_greedy_policy(estimator, current_epsilon, nA)
         action = estimator.action_set[action_idx]
         new_state, reward, terminated, _ = env.step(action)
@@ -293,12 +247,16 @@ def sarsa_implicit(env_dict, estimator, num_episodes, c_alpha=1.0,
         else:
             phi_next = estimator.featurize_state(new_state)
             q_next = np.dot(estimator.weights[new_action_idx], phi_next)
+        # comupte \delta_t = R_t - estimator.bar_r + q(s_{t+1}, a_{t+1}) - q(s_{t}, a_{t})
         td_target = reward - estimator.bar_r + q_next
         td_error = td_target - q_sa
+        # update z 
         z = Lambda * z + phi_state
-        estimator.weights[action_idx] += (alpha_eff * td_error * z) / (1 + alpha_eff * np.linalg.norm(phi_state)**2)
+        # update parameters 
+        estimator.weights[action_idx] += (alpha_eff * td_error * z) / (1 + alpha_eff * np.linalg.norm(z)**2)
         estimator.bar_r = estimator.bar_r + c_alpha * alpha_eff* (reward - estimator.bar_r) / (1+ c_alpha * alpha_eff)
 
+        # performs projection if R (projection radius) is given
         if R:
             if np.linalg.norm(estimator.weights[action_idx]) > R - 1:
                 estimator.weights[action_idx] = (
@@ -341,18 +299,17 @@ def run_experiment(algorithm, alpha0, num_episodes, c_alpha=1.0, epsilon=0.1, ep
     """
     Runs one experiment with a fresh estimator using the given algorithm.
     Returns:
-       rmsbe_curve: Array of RMSBE values per episode.
-       cum_reward: Array of cumulative reward per episode.
-       episode_rewards: Array of episode rewards.
+       rmsbe_curve: Array of sanity check values per episode. (RMSBE)
+       bar_reward : mean of average reward 
+       ins_reward : the last reported instant reward
     """
     ## Initalize 
     estimator = Estimator(num_actions=num_actions, action_set=action_set)
     stats, rmsbe_curve, reward_curve = algorithm(env, estimator, num_episodes, c_alpha, epsilon, epsilon_decay, alpha0, rmsbe_every, n_rmsbe_samples, R=R)
 
-    #cum_reward = np.cumsum(stats.episode_rewards)
     bar_reward = stats.episode_bar_r
-    ins_reward = reward_curve #stats.episode_rewards
-    return rmsbe_curve, bar_reward, ins_reward#stats.episode_rewards
+    ins_reward = reward_curve 
+    return rmsbe_curve, bar_reward, ins_reward
 
 # ---------------------------
 # Run Multiple Experiments and Average Results
@@ -391,7 +348,7 @@ def arguments_generator():
     parser = argparse.ArgumentParser(description="For experiments")
     
     # Define the expected arguments
-    parser.add_argument('--env', type=str, choices=['access_control','pendulum', 'cartpole', 'mountain_car', 'acrobot'], required=True,
+    parser.add_argument('--env', type=str, choices=['access_control','pendulum', 'cartpole'], required=True,
                         help='Name of the environment to run.')
     parser.add_argument('--name', type=str, default="default",
                         help='Prefix for the results figure filename.')
@@ -420,6 +377,8 @@ def arguments_generator():
 # ---------------------------
 if __name__ == '__main__':
     np.random.seed(20252026)
+
+    # Define arguments 
     args = arguments_generator()
     if not (0.5 <= args.s <= 1.0):
         raise ValueError("For 's_decay', s must be in the range [0.5, 1.0].")
@@ -430,20 +389,28 @@ if __name__ == '__main__':
 
     env_name = args.env
     if env_name == "cartpole":
+        # cartpole example 
         env = gym.make('CartPole-v1')
         raw_state_dim = env.observation_space.shape[0]  
         num_actions = env.action_space.n
         action_set = [i for i in range(num_actions)] 
         env = InfiniteHorizonWrapper(env)
+
     elif env_name == "pendulum":
+        # pendulum example 
         if not hasattr(np, 'float_'):
             np.float_ = np.float64
+        # use Gynmasium example 
         env = gym.make("Pendulum-v1")
-        env_test = gym.make("Pendulum-v1")
+        env_test = gym.make("Pendulum-v1") # dummy enviroment used for sanity check 
+        # discretize action sets 
         action_set = np.linspace(-2, 2, 5).reshape(-1,1)
         num_actions = len(action_set)
 
+        # scale reward function, and remove the termination stae 
         env = CustomInfinitePendulumWrapper(env)
+
+        # make feature function 
         env_test = CustomInfinitePendulumWrapper(env_test)
         states = [env.observation_space.sample() for _ in range(10000)]
         featurizer = Pipeline([
@@ -454,17 +421,21 @@ if __name__ == '__main__':
             ])),
         ])
         featurizer.fit(states)
-        alphas = np.arange(0.5, 3.05, 0.5) * 200  
 
+        # initial step sizes 
+        alphas = np.arange(0.5, 3.05, 0.5) * 200  
         epsilon = 0.25
+
     elif env_name == "access_control":
+        # make an access-control environment
         env = AccessControlEnv()
-        env_test = AccessControlEnv()  # used to measure RMSBE    
+        env_test = AccessControlEnv() # dummy enviroment used for sanity check     
+        
         num_actions = env.action_space.n
         action_set = [i for i in range(num_actions)] 
-        # 11 X 4 possible combinations arise in state space 
         states = [env.observation_space.sample() for _ in range(10000)]
 
+        # make feature function 
         featurizer = Pipeline([
             ("to_array", FunctionTransformer(lambda X: np.array(X, dtype=float), validate=False)),
             ("scaler",  MinMaxScaler(feature_range=(0,1))),
@@ -472,36 +443,41 @@ if __name__ == '__main__':
         ])
 
         featurizer.fit(states)
+
+        # initial step sizes
         alphas = np.arange(0.5, 3.05, 0.5) * 200 
         epsilon = 0.25
-
 
     num_experiments = args.num_experiments
     num_episodes = args.num_episodes + 1
     Lambda = args.lamb
     c_alpha = args.c_alpha
 
-    epsilon_decay = 1.0
+
+    # evaluation for sanity check 
     rmsbe_every = 1500
-    n_rmsbe_samples = 100
+    n_rmsbe_samples = 100 # number of rollout length used in the sanity checks 
     linear_decay = False 
+    epsilon_decay = 1.0 # not used, deprecated
+
     radius_1 = 1000
     radius_2 = 5000
+
     env_setup = {
     "env_name": env_name,  # String representing the environment name.
     "env": env,  # The actual environment object.
     "action_set": action_set
     }  
+
     alpha2 = 400
     env_name = args.env 
     figure_name = args.name 
-
     num_alphas = len(alphas)
-    num_episodes = args.num_episodes  
+    num_episodes = args.num_episodes # number of iterations, however use term episodes in this code example 
     max_steps = 100  
     
     results = {}
-    #print(args.step_size_schedule)
+
     if args.step_size_schedule == "non_linear_decay":
         base_folder = os.path.join("result", "control_learning", env_name, "non_linear_decay")
     elif args.step_size_schedule == "s_decay":
@@ -509,51 +485,61 @@ if __name__ == '__main__':
     else:
         raise ValueError
 
+    # ---------------------------
+    # Run Experiments for All Methods
+    # ---------------------------
+
     for alpha0 in alphas:
         if args.step_size_schedule == "linear_decay":
             t = np.arange(1, num_episodes+1) +alpha2
             step_sizes = alpha0 / t
         elif args.step_size_schedule == "s_decay":
             print(args.step_size_schedule)
-            #step_sizes = np.full(num_episodes, initial_step_size)
             step_sizes = np.full(num_episodes, alpha0 / alpha2)
-            t = (np.arange(1, num_episodes+1) + alpha2) ** args.s
+            t = (np.arange(1, num_episodes+1) + alpha2) ** args.s # \beta_t = (initial_step size) / (t + 400)^{0.99}
+            # first 150 iteration is fixed and set to be constant
             thr = 150 
-            step_sizes[thr:] = alpha0 / t[:-thr]
+            step_sizes[thr:] = alpha0 / t[:-thr] 
         else:
+            # constant step size
             step_sizes = np.full(num_episodes, alpha0)
             t = np.arange(1, num_episodes+1)  +alpha2
+            # first 150 iteration is fixed and set to be constant
             thr = 150 
-            #step_sizes[:thr] = alpha / alpha2
             step_sizes[thr:] = alpha0 / t[:-thr]
         print("\n=== Running Implicit TD SARSA Experiments ===")
-    #for alpha0 in implicit_params:
 
         print("\nImplicit TD SARSA with alpha0 =", alpha0)
+
+        # implicit TD (lambda) method without projection
         rmsbe_all, bar_reward_all, rewards_all = multi_experiment(
             sarsa_implicit, alpha0, num_episodes, num_experiments, c_alpha=c_alpha, epsilon=epsilon, epsilon_decay=epsilon_decay,
             rmsbe_every=rmsbe_every, n_rmsbe_samples=n_rmsbe_samples, R = None)
         results[("implicit", alpha0)] = (rmsbe_all, bar_reward_all, rewards_all)
+        # implicit TD (lambda) method with projection (radius 1) 
         rmsbe_all, bar_reward_all, rewards_all = multi_experiment(
             sarsa_implicit, alpha0, num_episodes, num_experiments,
             c_alpha=c_alpha, epsilon=epsilon, epsilon_decay=epsilon_decay,
             rmsbe_every=rmsbe_every, n_rmsbe_samples=n_rmsbe_samples, R = radius_1)
         results[("implicit_proj_R1", alpha0)] = (rmsbe_all, bar_reward_all, rewards_all)   
+        # implicit TD (lambda) method with projection (radius 2) 
         rmsbe_all, bar_reward_all, rewards_all = multi_experiment(
             sarsa_implicit, alpha0, num_episodes, num_experiments,
             c_alpha=c_alpha, epsilon=epsilon, epsilon_decay=epsilon_decay,
             rmsbe_every=rmsbe_every, n_rmsbe_samples=n_rmsbe_samples, R = radius_2)
         results[("implicit_proj_R2", alpha0)] = (rmsbe_all, bar_reward_all, rewards_all)   
+        
         print("\nStandard TD SARSA with alpha0 =", alpha0)
-        #alpha0 = alpha0 
+        
+        # Standard TD (lambda) method
         rmsbe_all, bar_reward_all, rewards_all = multi_experiment(
             sarsa_vanilla, alpha0, num_episodes, num_experiments,
             c_alpha=c_alpha, epsilon=epsilon, epsilon_decay=epsilon_decay,
             rmsbe_every=rmsbe_every, n_rmsbe_samples=n_rmsbe_samples)
         results[("standard", alpha0)] = (rmsbe_all, bar_reward_all, rewards_all)
 
+    # Store results 
     results[("alpha_2", 0)] = alpha2 
-    
     results[("alphas",0)] = alphas
 
     os.makedirs(base_folder, exist_ok=True)
@@ -567,5 +553,4 @@ if __name__ == '__main__':
     with open(save_path, 'wb') as f:
         pickle.dump(results, f)
     
-    episodes = np.arange(1, num_episodes+1)
     print(f"Results have been saved to: {save_path}")

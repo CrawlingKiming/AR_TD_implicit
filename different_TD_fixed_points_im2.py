@@ -21,6 +21,8 @@ from environment import BoyanChain
 
 def linear_TD_lambda(mrp, Phi, theta_star, theta_e, Lambda, T, c_alpha, step_sizes, initial_theta):
     """
+    Implements standard TD (lambda) algorithm 
+
         Inputs:
                 (1) mrp: markov reward process
                 (2) Phi: feature matrix
@@ -78,6 +80,8 @@ def linear_TD_lambda(mrp, Phi, theta_star, theta_e, Lambda, T, c_alpha, step_siz
 
 def two_imp_linear_TD_lambda(mrp, Phi, theta_star, theta_e, Lambda, T, c_alpha, step_sizes, initial_theta, radius = 100):
     """
+    Implements implicit TD (lambda) algorithms 
+
         Inputs:
                 (1) mrp: markov reward process
                 (2) Phi: feature matrix
@@ -123,12 +127,13 @@ def two_imp_linear_TD_lambda(mrp, Phi, theta_star, theta_e, Lambda, T, c_alpha, 
         theta = theta + step_sizes[t] * delta * z / (1 + step_sizes[t]*np.linalg.norm(z)**2)
 
         if radius:
+        # if projection radius is given, perform projection step 
             if np.linalg.norm(theta) > radius - 1:
                 theta = theta / np.linalg.norm(theta) * (radius - 1)
             if np.linalg.norm(bar_r) > 1:
                 bar_r = bar_r / np.linalg.norm(bar_r) * 1.0
 
-        # Norm of projection of theta_t - theta^* onto E
+        # Norm of projection of theta_t - theta^* onto O
         projected_theta = theta - (np.dot(theta, theta_e) / np.dot(theta_e, theta_e)) * theta_e
         proj_diff_norm = LA.norm(projected_theta - theta_star) **2 +  (bar_r - gain)**2 
         proj_diff_norm_hist[t] = proj_diff_norm
@@ -142,7 +147,8 @@ def two_imp_linear_TD_lambda(mrp, Phi, theta_star, theta_e, Lambda, T, c_alpha, 
 
 if __name__ == "__main__":
     np.random.seed(20252026)
-    # arguments 
+
+    # Arguments for the experiment
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "-e", "--env",type=str,default="MRP"
@@ -166,17 +172,19 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    num_states = 100
 
     if not (0.5 <= args.s <= 1.0):
         raise ValueError("For 's_decay', s must be in the range [0.5, 1.0].")
 
+    # set initial experimental values 
     if args.env=="MRP":
+        num_states = 100
         d = 10
     elif args.env =="Boyan":
         d = 4 + 2# fixed for Boyan
         num_states = 100
 
+    # compute feature matrix, \theta_star and \theta_e for MRP 
     if args.env == "MRP": 
         mrp = GenerateRandomMRP(num_states=num_states)
         pi = stationary_distribution(mrp.trans_prob) # computing stationary distribution 
@@ -220,18 +228,20 @@ if __name__ == "__main__":
     for i in range(num_exp):
         print(f"initial point No. {i}")
         if args.env == "Boyan":
+            # compute feature matrix, \theta_star and \theta_e for Boyan 
+
+            # Sample deterministic policy for Boyan 
             policy_action = np.random.binomial(n=1, p=0.5, size=13)
-            # for Boyan, we change the policies, following the binomial distribution  
-            mrp = BoyanChain(eval_bool=True, policy_action=policy_action)
+            mrp = BoyanChain(eval_bool=True, policy_action=policy_action) # generates Boyan enviroment (object)
             pi = stationary_distribution(mrp.trans_prob)
             gain = stationary_reward(mrp.rewards, pi)
-            bias = basic_bias(mrp.rewards, mrp.trans_prob, gain, pi) # Basic differential 
-            #Phi = generate_feature_matrix(mrp.num_states, d, bias)
+            bias = basic_bias(mrp.rewards, mrp.trans_prob, gain, pi) 
             Phi = mrp.build_feature_matrix(bias=bias)
             theta_star = find_theta_star(Phi, bias)
             
             theta_e = LA.lstsq(Phi, np.ones(mrp.num_states), rcond=None)[0]
-            #print(theta_star, gain, theta_e)
+
+        # initialize 
         initial_theta = np.random.uniform(-1,1,d)  
 
         exp = i
@@ -239,13 +249,13 @@ if __name__ == "__main__":
             # Setup the step schedules 
             if args.step_size_schedule == "constant":
                 step_sizes = np.full(T, alpha / alpha2)
-                #t = np.arange(1, T+1) +alpha2
-                #step_sizes = alpha / t
+
             elif args.step_size_schedule == "non_linear_decay":
                 step_sizes = np.full(T, alpha / alpha2)
                 t = np.arange(1, T+1) +alpha2
                 thr = 150 
                 step_sizes[thr:] = alpha / t[:-thr]
+
             elif args.step_size_schedule == "s_decay":
                 initial_step_size = alpha / alpha2 
                 step_sizes = np.full(T, initial_step_size)
@@ -256,12 +266,14 @@ if __name__ == "__main__":
             # Standard algorithm 
             proj_diff_norm_hist_regular, proj_diff_hist_regular = linear_TD_lambda(mrp, Phi, theta_star, theta_e, Lambda, T, c_alpha, step_sizes, initial_theta)
             
-            # implicit update without Projection on Radius 
+            # implicit update without Projection 
             proj_diff_norm_hist_two_im, proj_diff_hist_two_im = two_imp_linear_TD_lambda(mrp, Phi, theta_star, theta_e, Lambda, T, c_alpha, step_sizes, initial_theta, radius=None)
-            # With Projection on Radius 
+            
+            # implicit update with Projection
             proj_2_diff_norm_hist_two_im, proj_2_diff_hist_two_im = two_imp_linear_TD_lambda(mrp, Phi, theta_star, theta_e, Lambda, T, c_alpha, step_sizes, initial_theta, radius=radius_1)
             proj_3_diff_norm_hist_two_im, proj_3_diff_hist_two_im = two_imp_linear_TD_lambda(mrp, Phi, theta_star, theta_e, Lambda, T, c_alpha, step_sizes, initial_theta, radius=radius_2)
             
+            # store results 
             proj_diff_exp[exp, alpha_idx, :] = proj_diff_hist_regular
             proj_diff_exp_im[exp, alpha_idx, :] = proj_diff_hist_two_im
             proj_2_diff_exp_im[exp, alpha_idx, :] = proj_2_diff_hist_two_im
