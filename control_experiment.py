@@ -52,10 +52,13 @@ class Estimator():
         else: 
             self.nA = num_actions 
         example_state = env.reset()
+        # feature, \phi 
         self.num_features = len(self.featurize_state(example_state))
         # Initialize one weight vector per action.
+        # corresponds to \theta_0
         self.weights = [np.random.uniform(-0.5, 0.5, size=self.num_features)for _ in range(self.nA)] #np.zeros(self.num_features) 
-        self.bar_r = 0.0 
+        # corresonds to \omega_0
+        self.omega = 0.0 
     
     def featurize_state(self, state):
         """
@@ -93,60 +96,19 @@ def make_epsilon_greedy_policy(estimator, epsilon, nA):
     return policy_fn
 
 # ---------------------------
-# Sanity Check 
-# ---------------------------
-def compute_rmsbe(estimator, env, discount_factor=1.0, n_samples=100):
-    """
-    Computes the accumulated differential Q value and the current Q value difference, used for sanity checks 
-    """
-    errors = []
-    errors_reward = []
-    length = 50
-    for j in range(10):
-        s = env_test.reset() # sample new state  
-        for _ in range(10):
-            a_idx = np.argmax(estimator.predict(s))
-            a = estimator.action_set[a_idx]
-            s, _, _, _ = env_test.step(a)
-        td_error = 0.0 
-        reward_est = 0.0 # initialize  
-        a_idx = np.argmax(estimator.predict(s))
-        a = estimator.action_set[a_idx]
-        q_sa0 = estimator.predict(s, a_idx)
-
-        for _ in range(n_samples):
-            
-            a_idx = np.argmax(estimator.predict(s))
-            a = estimator.action_set[a_idx]
-            new_state, reward, terminated, _ = env_test.step(a)
-            reward_est += reward # collect current reward
-            td_error += reward - estimator.bar_r # collect current differential value 
-            a_next_idx = np.argmax(estimator.predict(new_state))
-            
-            q_next = estimator.predict(new_state, a_next_idx)
-            s = new_state 
-
-        bar_r_est_error = reward_est/n_samples - estimator.bar_r # compute the different
-        q_error = td_error - q_sa0 # compute the difference from current Q(s,a) value and the cumulated differentail values
-        errors.append(q_error**2)
-        errors_reward.append(bar_r_est_error**2)
-    
-    return np.sqrt(np.mean(errors)), np.sqrt(np.mean(errors_reward))
-
-# ---------------------------
-# SARSA with Vanilla TD Update
+# SARSA with Standard Average-Reward TD (lambda) Update
 # ---------------------------
 def sarsa_vanilla(env_dict, estimator, num_episodes, c_alpha=1.0,
-                  epsilon=0.1, epsilon_decay=1.0, alpha0=0.1, rmsbe_every=1, n_rmsbe_samples=100, R = 1000, max_step=100):
+                  epsilon=0.1, epsilon_decay=1.0, alpha0=0.1, sanity_every=1, R = 1000, max_step=100):
     """
     Implements SARSA using the standard TD update under AR
     """
     
     nA = estimator.nA#env.action_space.n
-    stats = EpisodeStats(episode_bar_r=np.zeros(num_episodes),
+    stats = EpisodeStats(episode_omega=np.zeros(num_episodes),
                          episode_rewards=np.zeros(num_episodes))
-    rmsbe_list = []
-    reward_list = []
+    val1_list = []
+    val2_list = []
     state = env.reset() # initialize 
     z = 0.0
 
@@ -169,7 +131,7 @@ def sarsa_vanilla(env_dict, estimator, num_episodes, c_alpha=1.0,
         new_action = estimator.action_set[new_action_idx]
 
         stats.episode_rewards[i_episode] += reward
-        stats.episode_bar_r[i_episode] += estimator.bar_r 
+        stats.episode_omega[i_episode] += estimator.omega 
         phi_state = estimator.featurize_state(state)
         q_sa = np.dot(estimator.weights[action_idx], phi_state)
 
@@ -181,39 +143,40 @@ def sarsa_vanilla(env_dict, estimator, num_episodes, c_alpha=1.0,
         else:
             phi_next = estimator.featurize_state(new_state)
             q_next = np.dot(estimator.weights[new_action_idx], phi_next)
-        # comupte \delta_t = R_t - estimator.bar_r + q(s_{t+1}, a_{t+1}) - q(s_{t}, a_{t})
-        td_target = reward - estimator.bar_r + q_next
+        # comupte \delta_t = R_t^{\mu} - \omega_t + \phi(s_{t+1}^{\mu}, a_{t+1}^{mu})\theta_t - \phi(s_{t}^{\mu}, a_{t}^{\mu})\theta_t
+        td_target = reward - estimator.omega + q_next
         td_error = td_target - q_sa
         # update z 
         z = Lambda * z + phi_state
         # update parameters
         estimator.weights[action_idx] += (alpha_eff * td_error * z) 
-        estimator.bar_r = estimator.bar_r + c_alpha * alpha_eff* (reward - estimator.bar_r) 
+        estimator.omega = estimator.omega + c_alpha * alpha_eff* (reward - estimator.omega) 
         state = new_state
 
-        if (i_episode) % rmsbe_every == 0:
-            rmsbe, reward_curve = compute_rmsbe(estimator, env, c_alpha, n_samples=n_rmsbe_samples)
-            rmsbe_list.append(rmsbe)
-            reward_list.append(reward_curve)
-        print("\rStandard TD SARSA Episode {}/{} - RMEST: {:.3g} - α_eff: {:.4f} - AR_{:.4g}".format(
-            i_episode+1, num_episodes, rmsbe, alpha_eff, estimator.bar_r), end="")
+        if (i_episode) % sanity_every == 0:
+            # for code sanity checks, not used, all values incorporated in stats object
+            val1, val2 = 0,0
+            val1_list.append(val1)
+            val2_list.append(val2)
+        print("\rStandard TD SARSA Episode {}/{} - α_eff: {:.4f} - AR_{:.4g}".format(
+            i_episode+1, num_episodes, alpha_eff, estimator.omega), end="")
         sys.stdout.flush()
     print("\nStandard TD SARSA training finished.")
-    return stats, np.array(rmsbe_list), np.array(reward_list)
+    return stats, np.array(val1_list), np.array(val2_list)
 
 # ---------------------------s
-# SARSA with Implicit TD Update
+# SARSA with Average-Reward Implicit TD(lambda) Update
 # ---------------------------
 def sarsa_implicit(env_dict, estimator, num_episodes, c_alpha=1.0,
-                   epsilon=0.1, epsilon_decay=1.0, alpha0=0.5, rmsbe_every=1, n_rmsbe_samples=100, R = 1000, max_step=100):
+                   epsilon=0.1, epsilon_decay=1.0, alpha0=0.5, sanity_every=1, R = 1000, max_step=100):
     """
     Implements SARSA using the implicit TD update under AR
     """
     nA = estimator.nA#env.action_space.n
-    stats = EpisodeStats(episode_bar_r=np.zeros(num_episodes),
+    stats = EpisodeStats(episode_omega=np.zeros(num_episodes),
                          episode_rewards=np.zeros(num_episodes))
-    rmsbe_list = []
-    reward_list = []
+    val1_list = []
+    val2_list = []
     z = 0.0 
     state = env.reset()
     thr = 5000  # epsilon value decreasing for every thr iteration 
@@ -236,7 +199,7 @@ def sarsa_implicit(env_dict, estimator, num_episodes, c_alpha=1.0,
         new_action_idx = np.random.choice(nA, p=policy(new_state))
         new_action = estimator.action_set[new_action_idx]
         stats.episode_rewards[i_episode] += reward
-        stats.episode_bar_r[i_episode] += estimator.bar_r
+        stats.episode_omega[i_episode] += estimator.omega
         phi_state = estimator.featurize_state(state)
         q_sa = np.dot(estimator.weights[action_idx], phi_state)
 
@@ -247,14 +210,14 @@ def sarsa_implicit(env_dict, estimator, num_episodes, c_alpha=1.0,
         else:
             phi_next = estimator.featurize_state(new_state)
             q_next = np.dot(estimator.weights[new_action_idx], phi_next)
-        # comupte \delta_t = R_t - estimator.bar_r + q(s_{t+1}, a_{t+1}) - q(s_{t}, a_{t})
-        td_target = reward - estimator.bar_r + q_next
+        # comupte \delta_t = R_t^{\mu} - \omega_t + \phi(s_{t+1}^{\mu}, a_{t+1}^{mu})\theta_t - \phi(s_{t}^{\mu}, a_{t}^{\mu})\theta_t
+        td_target = reward - estimator.omega + q_next
         td_error = td_target - q_sa
         # update z 
         z = Lambda * z + phi_state
         # update parameters 
         estimator.weights[action_idx] += (alpha_eff * td_error * z) / (1 + alpha_eff * np.linalg.norm(z)**2)
-        estimator.bar_r = estimator.bar_r + c_alpha * alpha_eff* (reward - estimator.bar_r) / (1+ c_alpha * alpha_eff)
+        estimator.omega = estimator.omega + c_alpha * alpha_eff* (reward - estimator.omega) / (1+ c_alpha * alpha_eff)
 
         # performs projection if R (projection radius) is given
         if R:
@@ -264,85 +227,70 @@ def sarsa_implicit(env_dict, estimator, num_episodes, c_alpha=1.0,
                     / np.linalg.norm(estimator.weights[action_idx]) 
                     * (R - 1)
                 )
-            if np.linalg.norm(estimator.bar_r) > 1:
-                estimator.bar_r = (
-                    estimator.bar_r 
-                    / np.linalg.norm(estimator.bar_r) 
+            if np.linalg.norm(estimator.omega) > 1:
+                estimator.omega = (
+                    estimator.omega 
+                    / np.linalg.norm(estimator.omega) 
                     * 1.0
                 )
 
         state = new_state
         action_idx = new_action_idx
 
-        if (i_episode) % rmsbe_every == 0:
-            rmsbe, reward_curve = compute_rmsbe(estimator, env, c_alpha, n_samples=n_rmsbe_samples)
-            rmsbe_list.append(rmsbe)
-            reward_list.append(reward_curve)
-        print("\rImplicit TD SARSA Episode {}/{} - RMEST: {} - α_eff: {:.5f} - AR_{:.4f}".format(
-            i_episode+1, num_episodes, rmsbe, alpha_eff, estimator.bar_r), end="")
+        if (i_episode) % sanity_every == 0:
+            # for code sanity checks, not used, all values incorporated in stats. object
+            val1, val2 = 0,0
+            val1_list.append(val1)
+            val2_list.append(val2)
+        print("\rImplicit TD SARSA Episode {}/{} - α_eff: {:.5f} - AR_{:.4f}".format(
+            i_episode+1, num_episodes, alpha_eff, estimator.omega), end="")
         sys.stdout.flush()
     print("\nImplicit TD SARSA training finished.")
-    return stats, np.array(rmsbe_list), np.array(reward_list)
+    return stats, np.array(val1_list), np.array(val2_list)
 
 # ---------------------------
 # EpisodeStats Class for Tracking Performance
 # ---------------------------
 class EpisodeStats():
-    def __init__(self, episode_bar_r, episode_rewards):
-        self.episode_bar_r=episode_bar_r
+    def __init__(self, episode_omega, episode_rewards):
+        self.episode_omega=episode_omega
         self.episode_rewards = episode_rewards
 
 # ---------------------------
 # Helper Function to Run One Experiment
 # ---------------------------
-def run_experiment(algorithm, alpha0, num_episodes, c_alpha=1.0, epsilon=0.1, epsilon_decay=1.0, rmsbe_every=1, n_rmsbe_samples=100, R=None):
+def run_experiment(algorithm, alpha0, num_episodes, c_alpha=1.0, epsilon=0.1, epsilon_decay=1.0, sanity_every=1, R=None):
     """
     Runs one experiment with a fresh estimator using the given algorithm.
     Returns:
-       rmsbe_curve: Array of sanity check values per episode. (RMSBE)
-       bar_reward : mean of average reward 
+       omegaeward : mean of average reward 
        ins_reward : the last reported instant reward
     """
     ## Initalize 
     estimator = Estimator(num_actions=num_actions, action_set=action_set)
-    stats, rmsbe_curve, reward_curve = algorithm(env, estimator, num_episodes, c_alpha, epsilon, epsilon_decay, alpha0, rmsbe_every, n_rmsbe_samples, R=R)
-
-    bar_reward = stats.episode_bar_r
-    ins_reward = reward_curve 
-    return rmsbe_curve, bar_reward, ins_reward
+    stats, val1_curve, val2_curve = algorithm(env, estimator, num_episodes, c_alpha, epsilon, epsilon_decay, alpha0, sanity_every, R=R)
+    omegaeward = stats.episode_omega
+    return val1_curve, omegaeward, val2_curve
 
 # ---------------------------
 # Run Multiple Experiments and Average Results
 # ---------------------------
 def multi_experiment(algorithm, alpha0, num_episodes, num_experiments, **kwargs):
-    rmsbe_all = []
-    bar_reward_all = []
-    rewards_all = []
+    sanity_all = [] # used for the code sanity check
+    omega_all = []
+    val2_all = []
     for i in range(num_experiments):
         print("\nExperiment {}/{}".format(i+1, num_experiments))
-        rmsbe_curve, bar_reward, ins_reward = run_experiment(algorithm, alpha0, num_episodes, **kwargs)
-        rmsbe_all.append(rmsbe_curve)
-        bar_reward_all.append(bar_reward)
-        rewards_all.append(ins_reward)
-    rmsbe_all = np.array(rmsbe_all)      # shape: (num_experiments, num_episodes)
-    bar_reward_all = np.array(bar_reward_all)  # shape: (num_experiments, num_episodes)
-    rewards_all = np.array(rewards_all)
+        sanity_check, omegaeward, val2_curve = run_experiment(algorithm, alpha0, num_episodes, **kwargs)
+        sanity_all.append(sanity_check)
+        omega_all.append(omegaeward)
+        val2_all.append(val2_curve)
+    sanity_all = np.array(sanity_all)      # shape: (num_experiments, num_episodes)
+    omega_all = np.array(omega_all)  # shape: (num_experiments, num_episodes)
+    val2_all = np.array(val2_all)
 
-    return rmsbe_all, bar_reward_all, rewards_all  
+    return sanity_all, omega_all, val2_all  
 
-# ---------------------------
-# Plotting Helpers
-# ---------------------------
-def plot_with_variance(x, mean, std, title, xlabel, ylabel):
-    plt.figure(figsize=(8, 4))
-    plt.plot(x, mean, label="Mean")
-    plt.fill_between(x, mean - std, mean + std, alpha=0.2, label="± 1 Std")
-    plt.title(title)
-    plt.xlabel(xlabel)
-    plt.ylabel(ylabel)
-    plt.legend()
-    plt.grid(True)
-    plt.show()
 
 def arguments_generator():
     parser = argparse.ArgumentParser(description="For experiments")
@@ -455,11 +403,8 @@ if __name__ == '__main__':
 
 
     # evaluation for sanity check 
-    rmsbe_every = 1500
-    n_rmsbe_samples = 100 # number of rollout length used in the sanity checks 
-    linear_decay = False 
-    epsilon_decay = 1.0 # not used, deprecated
-
+    sanity_every = 1500
+    # defines projection radius 
     radius_1 = 1000
     radius_2 = 5000
 
@@ -512,31 +457,31 @@ if __name__ == '__main__':
         print("\nImplicit TD SARSA with alpha0 =", alpha0)
 
         # implicit TD (lambda) method without projection
-        rmsbe_all, bar_reward_all, rewards_all = multi_experiment(
-            sarsa_implicit, alpha0, num_episodes, num_experiments, c_alpha=c_alpha, epsilon=epsilon, epsilon_decay=epsilon_decay,
-            rmsbe_every=rmsbe_every, n_rmsbe_samples=n_rmsbe_samples, R = None)
-        results[("implicit", alpha0)] = (rmsbe_all, bar_reward_all, rewards_all)
+        sanity_all, omega_all, rewards_all = multi_experiment(
+            sarsa_implicit, alpha0, num_episodes, num_experiments, c_alpha=c_alpha, epsilon=epsilon,
+            sanity_every=sanity_every, R = None)
+        results[("implicit", alpha0)] = (sanity_all, omega_all, rewards_all)
         # implicit TD (lambda) method with projection (radius 1) 
-        rmsbe_all, bar_reward_all, rewards_all = multi_experiment(
+        sanity_all, omega_all, rewards_all = multi_experiment(
             sarsa_implicit, alpha0, num_episodes, num_experiments,
-            c_alpha=c_alpha, epsilon=epsilon, epsilon_decay=epsilon_decay,
-            rmsbe_every=rmsbe_every, n_rmsbe_samples=n_rmsbe_samples, R = radius_1)
-        results[("implicit_proj_R1", alpha0)] = (rmsbe_all, bar_reward_all, rewards_all)   
+            c_alpha=c_alpha, epsilon=epsilon,
+            sanity_every=sanity_every, R = radius_1)
+        results[("implicit_proj_R1", alpha0)] = (sanity_all, omega_all, rewards_all)   
         # implicit TD (lambda) method with projection (radius 2) 
-        rmsbe_all, bar_reward_all, rewards_all = multi_experiment(
+        sanity_all, omega_all, rewards_all = multi_experiment(
             sarsa_implicit, alpha0, num_episodes, num_experiments,
-            c_alpha=c_alpha, epsilon=epsilon, epsilon_decay=epsilon_decay,
-            rmsbe_every=rmsbe_every, n_rmsbe_samples=n_rmsbe_samples, R = radius_2)
-        results[("implicit_proj_R2", alpha0)] = (rmsbe_all, bar_reward_all, rewards_all)   
+            c_alpha=c_alpha, epsilon=epsilon,
+            sanity_every=sanity_every, R = radius_2)
+        results[("implicit_proj_R2", alpha0)] = (sanity_all, omega_all, rewards_all)   
         
         print("\nStandard TD SARSA with alpha0 =", alpha0)
         
         # Standard TD (lambda) method
-        rmsbe_all, bar_reward_all, rewards_all = multi_experiment(
+        sanity_all, omega_all, rewards_all = multi_experiment(
             sarsa_vanilla, alpha0, num_episodes, num_experiments,
-            c_alpha=c_alpha, epsilon=epsilon, epsilon_decay=epsilon_decay,
-            rmsbe_every=rmsbe_every, n_rmsbe_samples=n_rmsbe_samples)
-        results[("standard", alpha0)] = (rmsbe_all, bar_reward_all, rewards_all)
+            c_alpha=c_alpha, epsilon=epsilon,
+            sanity_every=sanity_every)
+        results[("standard", alpha0)] = (sanity_all, omega_all, rewards_all)
 
     # Store results 
     results[("alpha_2", 0)] = alpha2 

@@ -43,8 +43,8 @@ def linear_TD_lambda(mrp, Phi, theta_star, theta_e, Lambda, T, c_alpha, step_siz
     d = Phi.shape[1]
 
     # Initialization
-    bar_r = 0.0
-    theta = np.copy(initial_theta)
+    omega = 0.0 # corresponds to \omega_0
+    theta = np.copy(initial_theta) # \theta_0
     z = np.zeros(d)
     proj_diff_norm_hist = np.zeros(T)
     proj_diff_hist = np.zeros(T)
@@ -55,14 +55,14 @@ def linear_TD_lambda(mrp, Phi, theta_star, theta_e, Lambda, T, c_alpha, step_siz
         current_state = mrp.current_state
         r, next_state = mrp.step()
 
-        # Get TD error
-        delta = r - bar_r + np.dot(Phi[next_state, :], theta) - np.dot(Phi[current_state, :], theta)
+        # Get TD error, corresponds to \deta_t 
+        delta = r - omega + np.dot(Phi[next_state, :], theta) - np.dot(Phi[current_state, :], theta)
 
         # Update eligibility trace
         z = Lambda * z + Phi[current_state, :]
 
-        # Update average-reward estimate
-        bar_r = bar_r + c_alpha * step_sizes[t] * (r - bar_r)
+        # Update average-reward estimate, corresponds to Omega_t updates
+        omega = omega + c_alpha * step_sizes[t] * (r - omega)
 
         # Update parameter vector
         theta = theta + step_sizes[t] * delta * z
@@ -70,7 +70,7 @@ def linear_TD_lambda(mrp, Phi, theta_star, theta_e, Lambda, T, c_alpha, step_siz
 
         # Norm of projection of theta_t - theta^* onto E
         projected_theta = theta - (np.dot(theta, theta_e) / np.dot(theta_e, theta_e)) * theta_e
-        proj_diff_norm = LA.norm(projected_theta - theta_star) **2 +  (bar_r - gain)**2 
+        proj_diff_norm = LA.norm(projected_theta - theta_star) **2 +  (omega - gain)**2 
         proj_diff_norm_hist[t] = proj_diff_norm
 
         # projection of theta_t - theta^* onto theta_e
@@ -102,8 +102,8 @@ def two_imp_linear_TD_lambda(mrp, Phi, theta_star, theta_e, Lambda, T, c_alpha, 
     d = Phi.shape[1]
 
     # Initialization
-    bar_r = 0.0
-    theta = np.copy(initial_theta)
+    omega = 0.0 # corresponds to omega_0 
+    theta = np.copy(initial_theta) # \theta_0 
     z = np.zeros(d)
     proj_diff_norm_hist = np.zeros(T)
     proj_diff_hist = np.zeros(T)
@@ -114,34 +114,34 @@ def two_imp_linear_TD_lambda(mrp, Phi, theta_star, theta_e, Lambda, T, c_alpha, 
         current_state = mrp.current_state
         r, next_state = mrp.step()
 
-        # Get TD error
-        delta = r - bar_r + np.dot(Phi[next_state, :], theta) - np.dot(Phi[current_state, :], theta)
+        # Get TD error, \delta_t 
+        delta = r - omega + np.dot(Phi[next_state, :], theta) - np.dot(Phi[current_state, :], theta)
 
         # Update eligibility trace
         z = Lambda * z + Phi[current_state, :]
 
-        # Update average-reward estimate
-        bar_r = bar_r + c_alpha * step_sizes[t] * (r - bar_r) / (1 + c_alpha * step_sizes[t])
+        # Update average-reward estimate, corresponds to \omega_t 
+        omega = omega + c_alpha * step_sizes[t] * (r - omega) / (1 + c_alpha * step_sizes[t])
 
-        # Update parameter vector
+        # Update parameter vector, \theta_t
         theta = theta + step_sizes[t] * delta * z / (1 + step_sizes[t]*np.linalg.norm(z)**2)
-
-        if radius:
+        
+        # the projection step 
+        if radius: 
         # if projection radius is given, perform projection step 
             if np.linalg.norm(theta) > radius - 1:
                 theta = theta / np.linalg.norm(theta) * (radius - 1)
-            if np.linalg.norm(bar_r) > 1:
-                bar_r = bar_r / np.linalg.norm(bar_r) * 1.0
+            if np.linalg.norm(omega) > 1:
+                omega = omega / np.linalg.norm(omega) * 1.0
 
         # Norm of projection of theta_t - theta^* onto O
         projected_theta = theta - (np.dot(theta, theta_e) / np.dot(theta_e, theta_e)) * theta_e
-        proj_diff_norm = LA.norm(projected_theta - theta_star) **2 +  (bar_r - gain)**2 
+        proj_diff_norm = LA.norm(projected_theta - theta_star) **2 +  (omega - gain)**2 
         proj_diff_norm_hist[t] = proj_diff_norm
         
         # projection of theta_t - theta^* onto theta_e
         proj_diff_hist[t] = np.dot(theta-theta_star, theta_e) / LA.norm(theta_e)
-    #print(bar_r, gain)
-    
+
     return proj_diff_norm_hist, proj_diff_hist
 
 
